@@ -18,6 +18,7 @@ import Floors from "./pages/Floors";
 import Paths from "./pages/Paths";
 import History from "./pages/History";
 import Settings from "./pages/Settings";
+import Building3D from "./pages/Building3D";
 
 function AppRoutes() {
   const { loading } = useAuth();
@@ -55,6 +56,7 @@ function AppRoutes() {
         <Route path="/paths" element={<Paths />} />
         <Route path="/history" element={<History />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/building-3d" element={<Building3D />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

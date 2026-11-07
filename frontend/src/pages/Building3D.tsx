@@ -1,0 +1,994 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, FLOOR_NAMES } from "../api/client";
+import { useAuth } from "../context/AuthContext";
+import { Badge, Spinner } from "../components/ui";
+import type {
+  Building,
+  PopularPlace,
+  QueuePosition,
+  QueueStatus,
+  RouteResponse,
+  TourSession,
+  TourSummary,
+} from "../types";
+
+// ─── Which tabs use the 3D graph vs the architectural model ──────────────────
+const GRAPH_TABS = new Set(["routes", "navigation"]);
+
+// ─── postMessage helpers ──────────────────────────────────────────────────────
+function sendMsg(iframe: HTMLIFrameElement | null, msg: object) {
+  try { iframe?.contentWindow?.postMessage(msg, "*"); } catch { /* cross-origin guard */ }
+}
+
+// ─── Space directory data (from DWG plans, nov. 2018) ────────────────────────
+interface SpaceEntry {
+  label: string;
+  count: string;
+  floors: number[];
+  detail?: string;
+  rooms?: string[];
+}
+const SPACE_DIRECTORY: { category: string; color: string; items: SpaceEntry[] }[] = [
+  {
+    category: "Académicos",
+    color: "bg-blue-100 text-blue-700",
+    items: [
+      {
+        label: "Aulas", count: "48", floors: [1, 2, 3, 4, 5],
+        detail: "P1: 3 · P2: 9 · P3: 9 · P4: 13 · P5: 14",
+        rooms: [
+          "P1: 101, 112, 113",
+          "P2: 201–207, 219, 220",
+          "P3: 303, 307–312, 316, 318",
+          "P4: 401–404, 406, 407, 414, 415, 420–424",
+          "P5: 501–505, 509–515, 517, 518",
+        ],
+      },
+      { label: "Auditorios", count: "2", floors: [0, 5], detail: "Auditorio (P0) · Auditorio Urcunina (P5)" },
+      { label: "Laboratorios", count: "≈14", floors: [3], detail: "Informática ×5 (P3) · Multifuncionales ×4 · Morfología, Biología molecular, Simulación clínica, Operaciones, Estudio sensorial" },
+    ],
+  },
+  {
+    category: "Salas", color: "bg-purple-100 text-purple-700",
+    items: [{ label: "Salas (todas)", count: "≈17", floors: [0, 1, 2, 3, 4, 5], detail: "Profesores ×5 · Juntas ×3 · Consultas ×2 · Espera ×2 · Lectura ×1-2 · Debriefing, Audiencia, Biblioteca ×1 c/u" }],
+  },
+  {
+    category: "Servicios", color: "bg-green-100 text-green-700",
+    items: [
+      { label: "Cafeterías / cafetines", count: "3", floors: [0, 1, 4], detail: "Cafetería (P1) · Cafetín (P0) · Cafetín (P4)" },
+      { label: "Baños hombres", count: "14", floors: [0, 1, 2, 3, 4, 5] },
+      { label: "Baños mujeres", count: "7", floors: [0, 1, 2, 3, 4, 5] },
+      { label: "Ascensores", count: "12 rótulos", floors: [0, 1, 2, 3, 4, 5], detail: "Se repiten entre pisos" },
+      { label: "Bodegas", count: "≈11", floors: [0], detail: "Principalmente en piso cero" },
+    ],
+  },
+  {
+    category: "Bienestar y recreación", color: "bg-amber-100 text-amber-700",
+    items: [
+      { label: "Zonas de estar", count: "2", floors: [2, 4], detail: "P2 y P4 · Área multifuncional en P0 · 14 plazoletas exteriores" },
+      { label: "Gimnasio", count: "1", floors: [0] },
+      { label: "Canchas sintéticas", count: "2", floors: [6], detail: "Azotea" },
+      { label: "Salón de música", count: "1", floors: [6], detail: "Azotea" },
+      { label: "Terrazas", count: "5", floors: [2, 3, 4, 5, 6] },
+    ],
+  },
+  {
+    category: "Administrativo", color: "bg-slate-100 text-slate-700",
+    items: [
+      { label: "Decanaturas", count: "4 rótulos", floors: [0, 1, 2, 3] },
+      { label: "Oficinas", count: "≈8", floors: [0, 1, 2, 3, 4] },
+      { label: "Recepción", count: "1", floors: [0] },
+      { label: "Bienestar", count: "1", floors: [0] },
+      { label: "Consultorio", count: "1", floors: [0, 1] },
+    ],
+  },
+];
+
+type Tab = "buildings" | "routes" | "navigation" | "tours" | "queues" | "rankings";
+
+// ─────────────────────────────────────────────────────────────────────────────
+export default function Building3D() {
+  const { user } = useAuth();
+
+  // two iframes: architectural model and 3D graph
+  const modelRef = useRef<HTMLIFrameElement>(null);
+  const graphRef  = useRef<HTMLIFrameElement>(null);
+  const [modelReady, setModelReady] = useState(false);
+  const [graphReady, setGraphReady] = useState(false);
+
+  const [tab, setTab] = useState<Tab>("buildings");
+  const [activeFloor, setActiveFloor] = useState<number | null>(null);
+
+  // data
+  const [buildings, setBuildings] = useState<Building[]>([]);
+  const [loadingData, setLoadingData] = useState(true);
+  const [search, setSearch] = useState("");
+
+  // routes
+  const [originId, setOriginId] = useState<number | "">("");
+  const [destId,   setDestId]   = useState<number | "">("");
+  const [routeResult,  setRouteResult]  = useState<RouteResponse | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeError,   setRouteError]   = useState("");
+
+  // navigation
+  const [navSearch,  setNavSearch]  = useState("");
+  const [navLoading, setNavLoading] = useState(false);
+  const [navMsg,     setNavMsg]     = useState("");
+  const [navTrail,   setNavTrail]   = useState<string[]>([]);
+  const [currentNav, setCurrentNav] = useState<string>("");
+  const [navRouteResult,  setNavRouteResult]  = useState<RouteResponse | null>(null);
+  const [prevNavBuildingId, setPrevNavBuildingId] = useState<number | null>(null);
+
+  // tours
+  const [tours,           setTours]           = useState<TourSummary[]>([]);
+  const [session,         setSession]         = useState<TourSession | null>(null);
+  const [tourLoading,     setTourLoading]     = useState(false);
+  const [tourRouteResult, setTourRouteResult] = useState<RouteResponse | null>(null);
+  const [prevTourBuildingId, setPrevTourBuildingId] = useState<number | null>(null);
+
+  // queues
+  const [queueStatuses, setQueueStatuses] = useState<Record<number, QueueStatus>>({});
+  const [myPositions,   setMyPositions]   = useState<Record<number, QueuePosition>>({});
+  const [queueMsg,      setQueueMsg]      = useState("");
+
+  // rankings
+  const [popularPlaces, setPopularPlaces] = useState<PopularPlace[]>([]);
+
+  // graph nodes received from iframe
+  const [graphNodes, setGraphNodes] = useState<Array<{id: number; name: string; floor: number; category: string}>>([]);
+  const [nodeSearch, setNodeSearch] = useState("");
+  const [routePickStep,       setRoutePickStep]       = useState<"idle" | "destination" | "done">("idle");
+  const [routePickOriginName, setRoutePickOriginName] = useState("");
+
+  // keep a ref to buildings so async callbacks always see latest value
+  const buildingsRef = useRef<Building[]>([]);
+  useEffect(() => { buildingsRef.current = buildings; }, [buildings]);
+
+  // core route calc — always uses a_star, no avoid
+  const triggerRouteCalc = useCallback(async (oId: number, dId: number) => {
+    if (!oId || !dId || oId === dId) return;
+    setRouteLoading(true);
+    setRouteError("");
+    setRouteResult(null);
+    try {
+      const result = await api.calculateRoute({
+        origin_id: oId,
+        destination_id: dId,
+        algorithm: "a_star",
+        avoid: [],
+      });
+      setRouteResult(result);
+      sendMsg(graphRef.current, { type: "HIGHLIGHT_ROUTE", path: result.path });
+      const origin = buildingsRef.current.find((b) => b.id === oId);
+      if (origin) sendMsg(graphRef.current, { type: "SHOW_FLOOR", floor: origin.floor });
+    } catch {
+      setRouteError("No se pudo calcular la ruta. Verifica que los edificios estén conectados.");
+    } finally {
+      setRouteLoading(false);
+    }
+  }, []);
+
+  // ── listen to messages from both iframes ──────────────────────────────────
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (!e.data?.type) return;
+      const d = e.data;
+
+      if (d.type === "FLOOR_CLICKED") setActiveFloor(d.floor as number);
+
+      if (d.type === "NODE_CLICKED") setNavMsg(`Seleccionado: ${d.name} (P${d.floor})`);
+
+      // Graph sent its node list on load
+      if (d.type === "GRAPH_READY") {
+        setGraphNodes(d.nodes as Array<{id: number; name: string; floor: number; category: string}>);
+      }
+
+      // Route pick — 1st click (origin selected in graph)
+      if (d.type === "ORIGIN_SELECTED") {
+        setRoutePickStep("destination");
+        setRoutePickOriginName(d.name as string);
+        setRouteResult(null);
+        setRouteError("");
+      }
+
+      // Route pick — graph calculated internally, show result
+      if (d.type === "ROUTE_CALCULATED") {
+        setRoutePickStep("done");
+        setRoutePickOriginName("");
+        // Show as a synthetic result in the panel
+        setRouteResult({
+          origin_name:      (d.origin as { name: string }).name,
+          destination_name: (d.destination as { name: string }).name,
+          path:             d.path as string[],
+          distance:         (d.hops as number) * 15, // ~15m per hop estimate
+          steps: [],
+        } as RouteResponse);
+        setRouteError("");
+      }
+
+      // Route not found
+      if (d.type === "ROUTE_NOT_FOUND") {
+        setRoutePickStep("idle");
+        setRoutePickOriginName("");
+        setRouteError(`No hay camino entre "${d.origin}" y "${d.destination}" en el grafo.`);
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [triggerRouteCalc]);
+
+  // activate / deactivate route-pick mode when tab changes or graph loads
+  useEffect(() => {
+    if (!graphReady) return;
+    const isRouteTab = tab === "routes";
+    sendMsg(graphRef.current, { type: "SET_ROUTE_MODE", enabled: isRouteTab });
+    if (!isRouteTab) {
+      setRoutePickStep("idle");
+      setRoutePickOriginName("");
+    }
+  }, [tab, graphReady]);
+  const loadAll = useCallback(async () => {
+    try {
+      const [b, t, s, pp] = await Promise.all([
+        api.listBuildings().catch(()   => [] as Building[]),
+        api.listTours().catch(()       => [] as TourSummary[]),
+        api.getTourSession().catch(()  => null),
+        api.popularPlaces(10).catch(() => [] as PopularPlace[]),
+      ]);
+      setBuildings(b);
+      setTours(t);
+      setSession(s);
+      setPopularPlaces(pp);
+      const statuses: Record<number, QueueStatus> = {};
+      await Promise.all(b.slice(0, 20).map(async (bld) => {
+        try { statuses[bld.id] = await api.getQueue(bld.id); } catch { /* ok */ }
+      }));
+      setQueueStatuses(statuses);
+    } finally {
+      setLoadingData(false);
+    }
+  }, []);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  // ── sync floor to architectural model ─────────────────────────────────────
+  const showFloor = (floor: number) => {
+    setActiveFloor(floor);
+    sendMsg(modelRef.current, { type: "SHOW_FLOOR", floor });
+    sendMsg(graphRef.current,  { type: "SHOW_FLOOR", floor });
+  };
+
+  const showAll = () => {
+    setActiveFloor(null);
+    sendMsg(modelRef.current, { type: "SHOW_ALL" });
+    sendMsg(graphRef.current,  { type: "SHOW_ALL" });
+  };
+
+  // ── route calculation (manual button) ───────────────────────────────────
+  const handleRoute = () => {
+    if (!originId || !destId) return;
+    triggerRouteCalc(originId as number, destId as number);
+  };
+
+  // Send a PICK_NODE to the graph (triggers selectNode inside iframe)
+  const pickGraphNode = (name: string) => {
+    sendMsg(graphRef.current, { type: "PICK_NODE", name });
+  };
+
+  // reset graph when changing origin/dest manually
+  const handleOriginChange = (id: number) => {
+    setOriginId(id);
+    setRouteResult(null);
+    setRoutePickStep("idle");
+    sendMsg(graphRef.current, { type: "CLEAR_HIGHLIGHT" });
+    // auto-calculate if dest already set
+    if (id && destId) triggerRouteCalc(id, destId as number);
+  };
+  const handleDestChange = (id: number) => {
+    setDestId(id);
+    setRouteResult(null);
+    setRoutePickStep("idle");
+    sendMsg(graphRef.current, { type: "CLEAR_HIGHLIGHT" });
+    // auto-calculate if origin already set
+    if (id && originId) triggerRouteCalc(originId as number, id);
+  };
+
+  // ── navigation ────────────────────────────────────────────────────────────
+  const handleVisit = async (b: Building) => {
+    setNavLoading(true);
+    setNavMsg("");
+    setNavRouteResult(null);
+    try {
+      // if there's already a current position, calculate route first
+      if (prevNavBuildingId && prevNavBuildingId !== b.id) {
+        try {
+          const route = await api.calculateRoute({
+            origin_id: prevNavBuildingId,
+            destination_id: b.id,
+            algorithm: "a_star",
+            avoid: [],
+          });
+          setNavRouteResult(route);
+          sendMsg(graphRef.current, { type: "HIGHLIGHT_ROUTE", path: route.path });
+        } catch { /* route not found, just navigate */ }
+      }
+      await api.visitPlace(b.id);
+      setNavMsg(`Visitaste: ${b.name}`);
+      setCurrentNav(b.name);
+      setPrevNavBuildingId(b.id);
+      setNavTrail((prev) => [...prev.slice(-9), b.name]);
+      sendMsg(graphRef.current, { type: "SHOW_FLOOR", floor: b.floor });
+      sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name: b.name });
+      showFloor(b.floor);
+    } catch {
+      setNavMsg("Error al registrar visita.");
+    } finally {
+      setNavLoading(false);
+    }
+  };
+
+  const handleNavBack = async () => {
+    try {
+      await api.goBack();
+      const trail = await api.getNavigation();
+      const cur = trail.trail.find((t) => t.is_current);
+      if (cur) {
+        setCurrentNav(cur.building_name);
+        setPrevNavBuildingId(cur.building_id);
+        setNavRouteResult(null);
+        sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name: cur.building_name });
+        showFloor(cur.floor);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const handleNavForward = async () => {
+    try {
+      await api.goForward();
+      const trail = await api.getNavigation();
+      const cur = trail.trail.find((t) => t.is_current);
+      if (cur) {
+        setCurrentNav(cur.building_name);
+        setPrevNavBuildingId(cur.building_id);
+        setNavRouteResult(null);
+        sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name: cur.building_name });
+        showFloor(cur.floor);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const handleClearNav = async () => {
+    await api.clearNavigation();
+    setNavTrail([]);
+    setCurrentNav("");
+    setNavMsg("");
+    setNavRouteResult(null);
+    setPrevNavBuildingId(null);
+    sendMsg(graphRef.current, { type: "CLEAR_HIGHLIGHT" });
+    showAll();
+  };
+
+  // ── tours ─────────────────────────────────────────────────────────────────
+  const calcTourRoute = useCallback(async (fromId: number | null, toName: string, toFloor: number) => {
+    if (!fromId) return;
+    const dest = buildings.find((b) => b.name === toName);
+    if (!dest || dest.id === fromId) return;
+    try {
+      const route = await api.calculateRoute({
+        origin_id: fromId,
+        destination_id: dest.id,
+        algorithm: "a_star",
+        avoid: [],
+      });
+      setTourRouteResult(route);
+      sendMsg(graphRef.current, { type: "HIGHLIGHT_ROUTE", path: route.path });
+      sendMsg(graphRef.current, { type: "SHOW_FLOOR", floor: toFloor });
+    } catch { setTourRouteResult(null); }
+  }, [buildings]);
+
+  const handleStartTour = async (id: number) => {
+    setTourLoading(true);
+    setTourRouteResult(null);
+    setPrevTourBuildingId(null);
+    try {
+      const s = await api.startTour(id);
+      setSession(s);
+      showFloor(s.current_stop.floor);
+      sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name: s.current_stop.building_name });
+      const bld = buildings.find((b) => b.name === s.current_stop.building_name);
+      if (bld) setPrevTourBuildingId(bld.id);
+    } catch { /* ignore */ } finally { setTourLoading(false); }
+  };
+
+  const handleTourNext = async () => {
+    if (!session) return;
+    const prevId = prevTourBuildingId;
+    try {
+      const s = await api.tourNext();
+      setSession(s);
+      showFloor(s.current_stop.floor);
+      sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name: s.current_stop.building_name });
+      const bld = buildings.find((b) => b.name === s.current_stop.building_name);
+      if (bld) {
+        setPrevTourBuildingId(bld.id);
+        await calcTourRoute(prevId, s.current_stop.building_name, s.current_stop.floor);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const handleTourPrev = async () => {
+    if (!session) return;
+    try {
+      const s = await api.tourPrevious();
+      setSession(s);
+      setTourRouteResult(null);
+      showFloor(s.current_stop.floor);
+      sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name: s.current_stop.building_name });
+      const bld = buildings.find((b) => b.name === s.current_stop.building_name);
+      if (bld) setPrevTourBuildingId(bld.id);
+    } catch { /* ignore */ }
+  };
+
+  const handleEndTour = async () => {
+    await api.endTour();
+    setSession(null);
+    setTourRouteResult(null);
+    setPrevTourBuildingId(null);
+    showAll();
+    sendMsg(graphRef.current, { type: "CLEAR_HIGHLIGHT" });
+  };
+
+  // ── queues ────────────────────────────────────────────────────────────────
+  const joinQueue = async (bld: Building) => {
+    setQueueMsg("");
+    try {
+      const pos = await api.joinQueue(bld.id);
+      setMyPositions((p) => ({ ...p, [bld.id]: pos }));
+      const status = await api.getQueue(bld.id);
+      setQueueStatuses((s) => ({ ...s, [bld.id]: status }));
+      setQueueMsg(`Unido a la cola de ${bld.name} — posición #${pos.position}`);
+      showFloor(bld.floor);
+    } catch { setQueueMsg("No se pudo unir a la cola."); }
+  };
+
+  const leaveQueue = async (bld: Building) => {
+    try {
+      await api.leaveQueue(bld.id);
+      setMyPositions((p) => { const c = { ...p }; delete c[bld.id]; return c; });
+      const status = await api.getQueue(bld.id);
+      setQueueStatuses((s) => ({ ...s, [bld.id]: status }));
+      setQueueMsg(`Saliste de la cola de ${bld.name}`);
+    } catch { /* ignore */ }
+  };
+
+  // ── filters ───────────────────────────────────────────────────────────────
+  const filtered    = buildings.filter((b) => b.name.toLowerCase().includes(search.toLowerCase()));
+  const navFiltered = buildings.filter((b) => b.name.toLowerCase().includes(navSearch.toLowerCase()));
+
+  // current iframe src
+  const useGraph = GRAPH_TABS.has(tab);
+
+  // ── render ────────────────────────────────────────────────────────────────
+  return (
+    <div className="building3d-fullheight flex h-[calc(100vh-4rem)] gap-0 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+
+      {/* ── Left: 3D viewers ─────────────────────────────────────────────── */}
+      <div className="relative flex-1 overflow-hidden bg-[#eef1f4]">
+
+        {/* Architectural model — visible on non-graph tabs */}
+        <div className={`absolute inset-0 transition-opacity duration-200 ${useGraph ? "pointer-events-none opacity-0" : "opacity-100"}`}>
+          {!modelReady && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-100 z-10">
+              <Spinner label="Cargando modelo 3D..." />
+            </div>
+          )}
+          <iframe
+            ref={modelRef}
+            src="/edificio_ucc_3d.html"
+            title="Modelo 3D UCC"
+            className="h-full w-full border-0"
+            onLoad={() => setModelReady(true)}
+            allowFullScreen
+          />
+        </div>
+
+        {/* 3D Graph — visible on Routes & Navigation */}
+        <div className={`absolute inset-0 transition-opacity duration-200 ${useGraph ? "opacity-100" : "pointer-events-none opacity-0"}`}>
+          {!graphReady && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-100 z-10">
+              <Spinner label="Cargando grafo 3D..." />
+            </div>
+          )}
+          <iframe
+            ref={graphRef}
+            src="/grafo_3d_edificio.html"
+            title="Grafo 3D UCC"
+            className="h-full w-full border-0"
+            onLoad={() => setGraphReady(true)}
+            allowFullScreen
+          />
+        </div>
+
+        {/* Legend badge */}
+        {useGraph && (
+          <div className="absolute top-3 right-3 flex flex-col gap-1 rounded-lg bg-white/90 px-3 py-2 text-[11px] shadow backdrop-blur-sm">
+            <span className="font-semibold text-slate-600">
+              {tab === "routes" && routePickStep === "idle"      && "🖱️ Clic = origen"}
+              {tab === "routes" && routePickStep === "destination" && "🖱️ Clic = destino"}
+              {tab === "routes" && routePickStep === "done"        && "✅ Ruta activa"}
+              {tab === "navigation" && "Navegación 3D"}
+            </span>
+            <div className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-full bg-[#22c55e]" />Origen (A)</div>
+            <div className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-full bg-[#fb923c]" />Intermedio</div>
+            <div className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-full bg-[#ef4444]" />Destino (B)</div>
+            {tab === "navigation" && (
+              <div className="flex items-center gap-1.5">
+                <span className="inline-block h-3 w-3 rounded-full bg-[#22c55e] ring-2 ring-green-300" />Posición actual
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Floor quick-filter bar — only on architectural model */}
+        {!useGraph && (
+          <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 gap-1 rounded-full bg-white/90 px-3 py-1.5 shadow-md backdrop-blur-sm">
+            <button
+              onClick={showAll}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeFloor === null ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+            >Todos</button>
+            {Object.entries(FLOOR_NAMES)
+              .filter(([lvl]) => Number(lvl) <= 5)
+              .map(([lvl, name]) => (
+                <button
+                  key={lvl}
+                  onClick={() => showFloor(Number(lvl))}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeFloor === Number(lvl) ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+                >
+                  {name.replace(" floor", "").replace("Ground", "P0")}
+                </button>
+              ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Right panel ──────────────────────────────────────────────────── */}
+      <div className="flex w-80 flex-shrink-0 flex-col overflow-hidden border-l border-slate-200 bg-white xl:w-96">
+
+        {/* Header */}
+        <div className="border-b border-slate-100 px-4 py-3">
+          <h2 className="text-sm font-bold text-slate-800">Campus UCC Pasto</h2>
+          <p className="text-xs text-slate-400">Edificio en T · 6 pisos · ~16 400 m²</p>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex overflow-x-auto border-b border-slate-100 px-2 pt-1">
+          {([ ["buildings","Edificios"], ["routes","Rutas"], ["navigation","Navegar"], ["tours","Tours"], ["queues","Colas"], ["rankings","Rankings"] ] as [Tab, string][]).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`mr-1 whitespace-nowrap rounded-t-md px-3 py-2 text-xs font-medium transition-colors ${tab === key ? "border-b-2 border-brand-500 text-brand-600" : "text-slate-500 hover:text-slate-700"}`}
+            >{label}</button>
+          ))}
+        </div>
+
+        {/* Tab body */}
+        <div className="flex-1 overflow-y-auto p-3">
+          {loadingData ? (
+            <div className="flex h-32 items-center justify-center"><Spinner label="Cargando..." /></div>
+          ) : (
+            <>
+              {/* ── EDIFICIOS ──────────────────────────────────────────── */}
+              {tab === "buildings" && (
+                <div className="space-y-2">
+                  <input type="text" placeholder="Buscar edificio..." value={search} onChange={(e) => setSearch(e.target.value)} className="input w-full text-sm" />
+                  <p className="text-xs text-slate-400">Clic para resaltar el piso en el modelo</p>
+                  {filtered.slice(0, 40).map((b) => (
+                    <button key={b.id} onClick={() => showFloor(b.floor)}
+                      className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition-colors hover:bg-brand-50 ${activeFloor === b.floor ? "border-brand-400 bg-brand-50" : "border-slate-100"}`}
+                    >
+                      <div>
+                        <p className="font-medium text-slate-700">{b.name}</p>
+                        {b.faculty && <p className="text-xs text-slate-400">{b.faculty}</p>}
+                      </div>
+                      <Badge color={activeFloor === b.floor ? "brand" : "slate"}>
+                        {FLOOR_NAMES[b.floor]?.replace(" floor", "") ?? `P${b.floor}`}
+                      </Badge>
+                    </button>
+                  ))}
+                  {filtered.length === 0 && <p className="py-4 text-center text-xs text-slate-400">Sin resultados</p>}
+
+                  <div className="mt-4 border-t border-slate-100 pt-3">
+                    <p className="mb-2 text-xs font-semibold text-slate-600">Directorio de espacios</p>
+                    <p className="mb-3 text-[11px] leading-tight text-slate-400">Solo espacios rotulados en los planos DWG (nov. 2018). Clic en un espacio → resalta el piso.</p>
+                    <SpaceDirectory showFloor={showFloor} activeFloor={activeFloor} />
+                  </div>
+                </div>
+              )}
+
+              {/* ── RUTAS ──────────────────────────────────────────────── */}
+              {tab === "routes" && (
+                <div className="space-y-3">
+
+                  {/* ── Click-to-pick banner ─────────────────────────── */}
+                  <div className={`rounded-lg border px-3 py-2 text-xs transition-colors ${
+                    routePickStep === "idle"
+                      ? "border-blue-100 bg-blue-50 text-blue-700"
+                      : routePickStep === "destination"
+                      ? "border-amber-200 bg-amber-50 text-amber-700"
+                      : "border-green-200 bg-green-50 text-green-700"
+                  }`}>
+                    {routePickStep === "idle" && (
+                      <span>🖱️ <strong>Haz clic en un nodo del grafo</strong> para seleccionar el <strong>origen</strong>, luego clic en otro para el <strong>destino</strong> — la ruta se calcula sola.</span>
+                    )}
+                    {routePickStep === "destination" && (
+                      <span>✅ Origen: <strong>{routePickOriginName}</strong><br/>Ahora <strong>haz clic en el nodo destino</strong> en el grafo.</span>
+                    )}
+                    {routePickStep === "done" && routeLoading && (
+                      <span>⏳ Calculando ruta...</span>
+                    )}
+                    {routePickStep === "done" && !routeLoading && routeResult && (
+                      <span>✅ Ruta calculada — <strong>{(routeResult.path.length - 1)} saltos</strong> · ~{routeResult.distance.toFixed(0)} m estimado. Haz clic de nuevo para nueva ruta.</span>
+                    )}
+                    {routePickStep === "done" && !routeLoading && !routeResult && (
+                      <span>⏳ Procesando...</span>
+                    )}
+                  </div>
+
+                  {/* ── Reset pick ───────────────────────────────────── */}
+                  {routePickStep !== "idle" && (
+                    <button
+                      onClick={() => {
+                        setRoutePickStep("idle");
+                        setRoutePickOriginName("");
+                        setOriginId("");
+                        setDestId("");
+                        setRouteResult(null);
+                        setRouteError("");
+                        sendMsg(graphRef.current, { type: "CLEAR_HIGHLIGHT" });
+                        sendMsg(graphRef.current, { type: "SET_ROUTE_MODE", enabled: true });
+                      }}
+                      className="btn-secondary w-full text-xs"
+                    >
+                      ↺ Nueva selección en grafo
+                    </button>
+                  )}
+
+                  {/* ── Manual selects (fallback) ─────────────────────── */}
+                  <details className="rounded-lg border border-slate-100">
+                    <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50">
+                      Selección manual (desplegables)
+                    </summary>
+                    <div className="space-y-3 px-3 pb-3 pt-2">
+                      <div>
+                        <label className="label">Origen</label>
+                        <select className="input w-full text-sm" value={originId}
+                          onChange={(e) => handleOriginChange(Number(e.target.value))}>
+                          <option value="">Selecciona...</option>
+                          {buildings.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="label">Destino</label>
+                        <select className="input w-full text-sm" value={destId}
+                          onChange={(e) => handleDestChange(Number(e.target.value))}>
+                          <option value="">Selecciona...</option>
+                          {buildings.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  </details>
+
+                  {/* ── Manual calculate button ───────────────────────── */}
+                  <button onClick={handleRoute} disabled={routeLoading || !originId || !destId}
+                    className="btn-primary w-full text-sm">
+                    {routeLoading ? "Calculando..." : user ? "Calcular y guardar" : "Calcular ruta"}
+                  </button>
+                  {routeError && <p className="text-xs text-red-500">{routeError}</p>}
+
+                  {/* ── Result ────────────────────────────────────────── */}
+                  {routeResult && (
+                    <div className="rounded-lg border border-brand-200 bg-brand-50 p-3 text-xs">
+                      <p className="font-semibold text-brand-700">
+                        {routeResult.origin_name} → {routeResult.destination_name}
+                      </p>
+                      <p className="mt-1 text-slate-600">
+                        <strong>{routeResult.path.length - 1} saltos</strong> · ~{routeResult.distance.toFixed(0)} m estimado
+                      </p>
+                      {routeResult.steps.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          {routeResult.steps.map((s, i) => (
+                            <div key={i} className="flex justify-between text-slate-500">
+                              <span>{s.origin_name} → {s.destination_name}
+                                <span className="ml-1 rounded bg-slate-100 px-1 text-[10px]">{s.kind}</span>
+                              </span>
+                              <span className="shrink-0 pl-2">{s.distance.toFixed(0)} m</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="mt-3">
+                        <p className="mb-1 font-medium text-slate-600">Camino ({routeResult.path.length} nodos):</p>
+                        <div className="flex flex-wrap items-center gap-1">
+                          {routeResult.path.map((node, i) => (
+                            <span key={i} className="flex items-center gap-0.5">
+                              <span className={`rounded px-1.5 py-0.5 text-slate-700 shadow-sm ${
+                                i === 0 ? "bg-green-100 font-bold" :
+                                i === routeResult.path.length - 1 ? "bg-red-100 font-bold" : "bg-white"
+                              }`}>{node}</span>
+                              {i < routeResult.path.length - 1 && <span className="text-slate-300">›</span>}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── NAVEGACIÓN ─────────────────────────────────────────── */}
+              {tab === "navigation" && (
+                <div className="space-y-2">
+                  <div className="rounded-lg border border-green-100 bg-green-50 px-3 py-2 text-xs text-green-700">
+                    El grafo 3D resalta el nodo actual. Al visitar un lugar, se calcula la ruta desde tu posición actual.
+                  </div>
+
+                  {/* Trail + route result */}
+                  {navTrail.length > 0 && (
+                    <div className="rounded-lg border border-slate-100 p-2">
+                      <p className="mb-1 text-xs font-semibold text-slate-600">Rastro de navegación</p>
+                      <div className="flex flex-wrap gap-1">
+                        {navTrail.map((name, i) => (
+                          <span key={i} className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${name === currentNav ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600"}`}>
+                            {name}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="mt-2 flex gap-2">
+                        <button onClick={handleNavBack}    className="btn-secondary flex-1 text-xs py-1">← Atrás</button>
+                        <button onClick={handleNavForward} className="btn-secondary flex-1 text-xs py-1">Adelante →</button>
+                        <button onClick={handleClearNav}   className="btn-secondary text-xs py-1 px-2">✕</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Route between current and next stop */}
+                  {navRouteResult && (
+                    <div className="rounded-lg border border-green-200 bg-green-50 p-2 text-xs">
+                      <p className="font-semibold text-green-700">
+                        {navRouteResult.origin_name} → {navRouteResult.destination_name}
+                      </p>
+                      <p className="mt-0.5 text-slate-600">
+                        {navRouteResult.distance.toFixed(1)} m · {navRouteResult.path.length} nodos
+                      </p>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-0.5">
+                        {navRouteResult.path.map((node, i) => (
+                          <span key={i} className="flex items-center gap-0.5">
+                            <span className={`rounded px-1 py-0.5 ${i === 0 ? "bg-green-200 font-bold" : i === navRouteResult.path.length - 1 ? "bg-red-100 font-bold" : "bg-white"} text-slate-700 shadow-sm`}>
+                              {node}
+                            </span>
+                            {i < navRouteResult.path.length - 1 && <span className="text-slate-300">›</span>}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {navMsg && <div className="rounded bg-brand-50 px-3 py-2 text-xs text-brand-700">{navMsg}</div>}
+
+                  <input type="text" placeholder="Buscar lugar para visitar..." value={navSearch} onChange={(e) => setNavSearch(e.target.value)} className="input w-full text-sm" />
+
+                  {navFiltered.slice(0, 30).map((b) => (
+                    <button key={b.id} onClick={() => handleVisit(b)} disabled={navLoading}
+                      className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition-colors hover:bg-brand-50 ${b.name === currentNav ? "border-brand-400 bg-brand-50" : "border-slate-100"}`}
+                    >
+                      <div>
+                        <p className="font-medium text-slate-700">{b.name}</p>
+                        <p className="text-xs text-slate-400">{FLOOR_NAMES[b.floor] ?? `Piso ${b.floor}`}</p>
+                      </div>
+                      {b.name === currentNav
+                        ? <Badge color="brand">Actual</Badge>
+                        : <span className="text-xs text-brand-400">Ir aquí →</span>
+                      }
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* ── TOURS ──────────────────────────────────────────────── */}
+              {tab === "tours" && (
+                <div className="space-y-3">
+                  {session ? (
+                    <div className="rounded-lg border border-brand-200 bg-brand-50 p-3">
+                      <p className="text-xs font-bold text-brand-700">Tour en curso: {session.tour_name}</p>
+                      <p className="mt-1 text-xs text-slate-600">Parada {session.current_stop.position} / {session.total_stops}</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-800">{session.current_stop.building_name}</p>
+                      <p className="text-xs text-slate-400">{FLOOR_NAMES[session.current_stop.floor] ?? `Piso ${session.current_stop.floor}`}</p>
+
+                      {/* Route to current stop */}
+                      {tourRouteResult && (
+                        <div className="mt-2 rounded border border-brand-100 bg-white p-2 text-xs">
+                          <p className="font-medium text-brand-600">
+                            {tourRouteResult.origin_name} → {tourRouteResult.destination_name}
+                          </p>
+                          <p className="text-slate-500">{tourRouteResult.distance.toFixed(1)} m · {tourRouteResult.path.length} nodos</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-0.5">
+                            {tourRouteResult.path.map((node, i) => (
+                              <span key={i} className="flex items-center gap-0.5">
+                                <span className={`rounded px-1 py-0.5 text-slate-700 shadow-sm ${i === 0 ? "bg-green-100 font-bold" : i === tourRouteResult.path.length - 1 ? "bg-red-100 font-bold" : "bg-white"}`}>
+                                  {node}
+                                </span>
+                                {i < tourRouteResult.path.length - 1 && <span className="text-slate-300">›</span>}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-3 flex gap-2">
+                        <button onClick={handleTourPrev} className="btn-secondary flex-1 text-xs">← Ant.</button>
+                        <button onClick={handleTourNext} className="btn-primary flex-1 text-xs">Sig. →</button>
+                        <button onClick={handleEndTour}  className="btn-danger text-xs px-2">Fin</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500">Elige un tour para iniciar.</p>
+                  )}
+                  {tours.map((tour) => (
+                    <div key={tour.id} className="rounded-lg border border-slate-100 p-3">
+                      <p className="text-sm font-medium text-slate-700">{tour.name}</p>
+                      {tour.description && <p className="text-xs text-slate-400">{tour.description}</p>}
+                      <div className="mt-2 flex items-center justify-between">
+                        <Badge color="brand">{tour.stop_count} paradas</Badge>
+                        {!session && <button onClick={() => handleStartTour(tour.id)} disabled={tourLoading} className="btn-primary px-3 py-1 text-xs">Iniciar</button>}
+                      </div>
+                    </div>
+                  ))}
+                  {tours.length === 0 && <p className="text-xs text-slate-400">No hay tours disponibles.</p>}
+                </div>
+              )}
+
+              {/* ── COLAS ──────────────────────────────────────────────── */}
+              {tab === "queues" && (
+                <div className="space-y-2">
+                  <p className="text-xs text-slate-500">Únete a una fila — el modelo mostrará ese piso.</p>
+                  {queueMsg && <div className="rounded bg-brand-50 px-3 py-2 text-xs text-brand-700">{queueMsg}</div>}
+                  {buildings.slice(0, 20).map((b) => {
+                    const status = queueStatuses[b.id];
+                    const myPos  = myPositions[b.id];
+                    return (
+                      <div key={b.id} className="rounded-lg border border-slate-100 p-3">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <p className="text-sm font-medium text-slate-700">{b.name}</p>
+                            <p className="text-xs text-slate-400">{FLOOR_NAMES[b.floor] ?? `Piso ${b.floor}`}</p>
+                          </div>
+                          <Badge color={status && status.length > 0 ? "amber" : "green"}>
+                            {status ? `${status.length} en fila` : "—"}
+                          </Badge>
+                        </div>
+                        {myPos && <p className="mt-1 text-xs font-semibold text-brand-600">Tu posición: #{myPos.position}</p>}
+                        <div className="mt-2">
+                          {!myPos
+                            ? <button onClick={() => joinQueue(b)}  className="btn-primary  w-full py-1 text-xs">Unirse</button>
+                            : <button onClick={() => leaveQueue(b)} className="btn-secondary w-full py-1 text-xs">Salir de la cola</button>
+                          }
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* ── RANKINGS ───────────────────────────────────────────── */}
+              {tab === "rankings" && (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-slate-600 mb-1">Lugares más visitados</p>
+                  {popularPlaces.map((place) => (
+                    <button key={place.building_id} onClick={() => showFloor(place.floor)}
+                      className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors hover:bg-brand-50 ${activeFloor === place.floor ? "border-brand-300 bg-brand-50" : "border-slate-100"}`}
+                    >
+                      <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${place.rank === 1 ? "bg-amber-100 text-amber-700" : place.rank <= 3 ? "bg-orange-100 text-orange-700" : "bg-slate-100 text-slate-500"}`}>
+                        {place.rank}
+                      </span>
+                      <div className="flex-1">
+                        <p className="font-medium text-slate-700">{place.building_name}</p>
+                        <p className="text-xs text-slate-400">{FLOOR_NAMES[place.floor] ?? `Piso ${place.floor}`}</p>
+                      </div>
+                      <Badge color="brand">{place.visits}</Badge>
+                    </button>
+                  ))}
+                  {popularPlaces.length === 0 && <p className="py-4 text-center text-xs text-slate-400">Sin datos todavía.</p>}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer — view controls */}
+        <div className="border-t border-slate-100 px-3 py-2">
+          <p className="mb-1.5 text-xs font-medium text-slate-500">
+            {useGraph ? "Vista del grafo 3D" : "Vista del modelo 3D"}
+          </p>
+          {useGraph ? (
+            <div className="flex gap-2">
+              <button onClick={() => sendMsg(graphRef.current, { type: "SHOW_ALL" })}         className="btn-secondary flex-1 py-1 text-xs">Todos los pisos</button>
+              <button onClick={() => sendMsg(graphRef.current, { type: "CLEAR_HIGHLIGHT" })}  className="btn-secondary flex-1 py-1 text-xs">Limpiar ruta</button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <button onClick={() => sendMsg(modelRef.current, { type: "VIEW_ISO" })}         className="btn-secondary flex-1 py-1 text-xs">Isométrica</button>
+              <button onClick={() => sendMsg(modelRef.current, { type: "VIEW_TOP" })}         className="btn-secondary flex-1 py-1 text-xs">Superior</button>
+              <button onClick={() => sendMsg(modelRef.current, { type: "EXPLODE", on: true })} className="btn-secondary flex-1 py-1 text-xs">Separar</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Space Directory component ────────────────────────────────────────────────
+function SpaceDirectory({ showFloor, activeFloor }: { showFloor: (f: number) => void; activeFloor: number | null }) {
+  const [openCategory, setOpenCategory] = useState<string | null>(null);
+  const [openItem,     setOpenItem]     = useState<string | null>(null);
+  const lbl = (f: number) => f === 0 ? "P0" : f === 6 ? "Azotea" : `P${f}`;
+
+  return (
+    <div className="space-y-1.5">
+      {SPACE_DIRECTORY.map((cat) => (
+        <div key={cat.category} className="overflow-hidden rounded-lg border border-slate-100">
+          <button
+            onClick={() => setOpenCategory(openCategory === cat.category ? null : cat.category)}
+            className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-slate-50"
+          >
+            <span className="text-xs font-semibold text-slate-700">{cat.category}</span>
+            <div className="flex items-center gap-1.5">
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${cat.color}`}>{cat.items.length} tipos</span>
+              <span className="text-xs text-slate-400">{openCategory === cat.category ? "▲" : "▼"}</span>
+            </div>
+          </button>
+
+          {openCategory === cat.category && (
+            <div className="border-t border-slate-100">
+              {cat.items.map((item) => {
+                const key       = `${cat.category}-${item.label}`;
+                const isOpen    = openItem === key;
+                const isActive  = item.floors.some((f) => f === activeFloor);
+                return (
+                  <div key={item.label} className={`border-b border-slate-50 last:border-0 ${isActive ? "bg-brand-50" : ""}`}>
+                    <div className="flex items-center px-3 py-2">
+                      <div className="flex flex-1 flex-wrap items-center gap-1">
+                        <span className="mr-1 text-xs font-medium text-slate-700">{item.label}</span>
+                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${cat.color}`}>{item.count}</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {item.floors.slice(0, 4).map((f) => (
+                          <button key={f} onClick={() => showFloor(f)} title={`Ir a ${lbl(f)}`}
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${activeFloor === f ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-brand-100"}`}
+                          >{lbl(f)}</button>
+                        ))}
+                        {item.floors.length > 4 && <span className="text-[10px] text-slate-400">+{item.floors.length - 4}</span>}
+                        {(item.detail || item.rooms) && (
+                          <button onClick={() => setOpenItem(isOpen ? null : key)} className="ml-1 text-[10px] text-slate-400 hover:text-slate-600">
+                            {isOpen ? "▲" : "ℹ"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {isOpen && (item.detail || item.rooms) && (
+                      <div className="px-3 pb-2 text-[11px] leading-relaxed text-slate-500">
+                        {item.detail && <p>{item.detail}</p>}
+                        {item.rooms && <ul className="mt-1 space-y-0.5">{item.rooms.map((r) => <li key={r} className="text-slate-400">· {r}</li>)}</ul>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
