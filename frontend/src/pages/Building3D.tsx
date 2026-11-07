@@ -610,81 +610,82 @@ export default function Building3D() {
               {tab === "routes" && (
                 <div className="space-y-3">
 
-                  {/* ── Click-to-pick banner ─────────────────────────── */}
+                  {/* ── Estado del modo clic ─────────────────────────── */}
                   <div className={`rounded-lg border px-3 py-2 text-xs transition-colors ${
-                    routePickStep === "idle"
-                      ? "border-blue-100 bg-blue-50 text-blue-700"
-                      : routePickStep === "destination"
-                      ? "border-amber-200 bg-amber-50 text-amber-700"
-                      : "border-green-200 bg-green-50 text-green-700"
+                    routePickStep === "idle"        ? "border-blue-100 bg-blue-50 text-blue-700"
+                    : routePickStep === "destination" ? "border-amber-200 bg-amber-50 text-amber-700"
+                    : "border-green-200 bg-green-50 text-green-700"
                   }`}>
-                    {routePickStep === "idle" && (
-                      <span>🖱️ <strong>Haz clic en un nodo del grafo</strong> para seleccionar el <strong>origen</strong>, luego clic en otro para el <strong>destino</strong> — la ruta se calcula sola.</span>
-                    )}
-                    {routePickStep === "destination" && (
-                      <span>✅ Origen: <strong>{routePickOriginName}</strong><br/>Ahora <strong>haz clic en el nodo destino</strong> en el grafo.</span>
-                    )}
-                    {routePickStep === "done" && routeLoading && (
-                      <span>⏳ Calculando ruta...</span>
-                    )}
-                    {routePickStep === "done" && !routeLoading && routeResult && (
-                      <span>✅ Ruta calculada — <strong>{(routeResult.path.length - 1)} saltos</strong> · ~{routeResult.distance.toFixed(0)} m estimado. Haz clic de nuevo para nueva ruta.</span>
-                    )}
-                    {routePickStep === "done" && !routeLoading && !routeResult && (
-                      <span>⏳ Procesando...</span>
-                    )}
+                    {routePickStep === "idle" && <>🖱️ <strong>Clic en el grafo</strong> o busca abajo para seleccionar el <strong>origen</strong></>}
+                    {routePickStep === "destination" && <>✅ Origen: <strong>{routePickOriginName}</strong> — ahora selecciona el <strong>destino</strong></>}
+                    {routePickStep === "done" && !routeLoading && routeResult && <>✅ <strong>{routeResult.path.length - 1} saltos</strong> · Haz clic de nuevo para nueva ruta</>}
+                    {routePickStep === "done" && routeLoading && <>⏳ Calculando...</>}
                   </div>
 
-                  {/* ── Reset pick ───────────────────────────────────── */}
+                  {/* ── Reset ────────────────────────────────────────── */}
                   {routePickStep !== "idle" && (
-                    <button
-                      onClick={() => {
-                        setRoutePickStep("idle");
-                        setRoutePickOriginName("");
-                        setOriginId("");
-                        setDestId("");
-                        setRouteResult(null);
-                        setRouteError("");
-                        sendMsg(graphRef.current, { type: "CLEAR_HIGHLIGHT" });
-                        sendMsg(graphRef.current, { type: "SET_ROUTE_MODE", enabled: true });
-                      }}
-                      className="btn-secondary w-full text-xs"
-                    >
-                      ↺ Nueva selección en grafo
-                    </button>
+                    <button onClick={() => {
+                      setRoutePickStep("idle"); setRoutePickOriginName("");
+                      setRouteResult(null); setRouteError("");
+                      sendMsg(graphRef.current, { type: "CLEAR_HIGHLIGHT" });
+                      sendMsg(graphRef.current, { type: "SET_ROUTE_MODE", enabled: true });
+                    }} className="btn-secondary w-full text-xs">↺ Nueva selección</button>
                   )}
 
-                  {/* ── Manual selects (fallback) ─────────────────────── */}
-                  <details className="rounded-lg border border-slate-100">
-                    <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50">
-                      Selección manual (desplegables)
-                    </summary>
-                    <div className="space-y-3 px-3 pb-3 pt-2">
-                      <div>
-                        <label className="label">Origen</label>
-                        <select className="input w-full text-sm" value={originId}
-                          onChange={(e) => handleOriginChange(Number(e.target.value))}>
-                          <option value="">Selecciona...</option>
-                          {buildings.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="label">Destino</label>
-                        <select className="input w-full text-sm" value={destId}
-                          onChange={(e) => handleDestChange(Number(e.target.value))}>
-                          <option value="">Selecciona...</option>
-                          {buildings.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                        </select>
-                      </div>
+                  {/* ── Buscador de nodos del grafo ───────────────────── */}
+                  <div className="rounded-lg border border-slate-200 bg-slate-50">
+                    <div className="border-b border-slate-200 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        {routePickStep === "destination" ? "🔴 Selecciona el DESTINO" : "🟢 Selecciona el ORIGEN"}
+                      </p>
+                      <input
+                        type="text"
+                        placeholder="Buscar espacio en el grafo..."
+                        value={nodeSearch}
+                        onChange={(e) => setNodeSearch(e.target.value)}
+                        className="mt-1.5 w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-brand-400"
+                      />
                     </div>
-                  </details>
+                    <div className="max-h-44 overflow-y-auto p-2">
+                      {graphNodes.length === 0 ? (
+                        <p className="py-2 text-center text-[11px] text-slate-400">Cargando nodos del grafo...</p>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {graphNodes
+                            .filter(n => !nodeSearch || n.name.toLowerCase().includes(nodeSearch.toLowerCase()))
+                            .slice(0, 60)
+                            .map((n) => {
+                              const catColors: Record<string, string> = {
+                                aula: "bg-amber-50 border-amber-300 text-amber-800",
+                                laboratorio: "bg-red-50 border-red-300 text-red-800",
+                                sala: "bg-green-50 border-green-300 text-green-800",
+                                oficina: "bg-purple-50 border-purple-300 text-purple-800",
+                                bano: "bg-slate-50 border-slate-300 text-slate-700",
+                                ascensor: "bg-blue-50 border-blue-300 text-blue-800",
+                                cafeteria: "bg-pink-50 border-pink-300 text-pink-800",
+                                auditorio: "bg-rose-50 border-rose-300 text-rose-800",
+                                bodega: "bg-stone-50 border-stone-300 text-stone-700",
+                                estar: "bg-teal-50 border-teal-300 text-teal-800",
+                                deporte: "bg-lime-50 border-lime-300 text-lime-800",
+                              };
+                              const cls = catColors[n.category] ?? "bg-white border-slate-200 text-slate-700";
+                              return (
+                                <button
+                                  key={n.id}
+                                  onClick={() => pickGraphNode(n.name)}
+                                  className={`rounded border px-2 py-0.5 text-[11px] transition-opacity hover:opacity-80 ${cls}`}
+                                  title={`${n.name} — Piso ${n.floor}`}
+                                >
+                                  {n.name} <span className="opacity-60">P{n.floor}</span>
+                                </button>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
-                  {/* ── Manual calculate button ───────────────────────── */}
-                  <button onClick={handleRoute} disabled={routeLoading || !originId || !destId}
-                    className="btn-primary w-full text-sm">
-                    {routeLoading ? "Calculando..." : user ? "Calcular y guardar" : "Calcular ruta"}
-                  </button>
-                  {routeError && <p className="text-xs text-red-500">{routeError}</p>}
+                  {routeError && <p className="rounded bg-red-50 px-3 py-2 text-xs text-red-600">{routeError}</p>}
 
                   {/* ── Result ────────────────────────────────────────── */}
                   {routeResult && (
@@ -695,18 +696,6 @@ export default function Building3D() {
                       <p className="mt-1 text-slate-600">
                         <strong>{routeResult.path.length - 1} saltos</strong> · ~{routeResult.distance.toFixed(0)} m estimado
                       </p>
-                      {routeResult.steps.length > 0 && (
-                        <div className="mt-2 space-y-1">
-                          {routeResult.steps.map((s, i) => (
-                            <div key={i} className="flex justify-between text-slate-500">
-                              <span>{s.origin_name} → {s.destination_name}
-                                <span className="ml-1 rounded bg-slate-100 px-1 text-[10px]">{s.kind}</span>
-                              </span>
-                              <span className="shrink-0 pl-2">{s.distance.toFixed(0)} m</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
                       <div className="mt-3">
                         <p className="mb-1 font-medium text-slate-600">Camino ({routeResult.path.length} nodos):</p>
                         <div className="flex flex-wrap items-center gap-1">
@@ -730,10 +719,10 @@ export default function Building3D() {
               {tab === "navigation" && (
                 <div className="space-y-2">
                   <div className="rounded-lg border border-green-100 bg-green-50 px-3 py-2 text-xs text-green-700">
-                    El grafo 3D resalta el nodo actual. Al visitar un lugar, se calcula la ruta desde tu posición actual.
+                    Selecciona un sitio para visitarlo — se calcula la ruta desde tu posición actual y el grafo resalta el camino.
                   </div>
 
-                  {/* Trail + route result */}
+                  {/* Trail + nav controls */}
                   {navTrail.length > 0 && (
                     <div className="rounded-lg border border-slate-100 p-2">
                       <p className="mb-1 text-xs font-semibold text-slate-600">Rastro de navegación</p>
@@ -747,12 +736,12 @@ export default function Building3D() {
                       <div className="mt-2 flex gap-2">
                         <button onClick={handleNavBack}    className="btn-secondary flex-1 text-xs py-1">← Atrás</button>
                         <button onClick={handleNavForward} className="btn-secondary flex-1 text-xs py-1">Adelante →</button>
-                        <button onClick={handleClearNav}   className="btn-secondary text-xs py-1 px-2">✕</button>
+                        <button onClick={handleClearNav}   className="btn-secondary text-xs py-1 px-2">✕ Limpiar</button>
                       </div>
                     </div>
                   )}
 
-                  {/* Route between current and next stop */}
+                  {/* Route result */}
                   {navRouteResult && (
                     <div className="rounded-lg border border-green-200 bg-green-50 p-2 text-xs">
                       <p className="font-semibold text-green-700">
@@ -776,22 +765,101 @@ export default function Building3D() {
 
                   {navMsg && <div className="rounded bg-brand-50 px-3 py-2 text-xs text-brand-700">{navMsg}</div>}
 
-                  <input type="text" placeholder="Buscar lugar para visitar..." value={navSearch} onChange={(e) => setNavSearch(e.target.value)} className="input w-full text-sm" />
+                  {/* Search from API buildings */}
+                  <div>
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Edificios del campus</p>
+                    <input type="text" placeholder="Buscar edificio..." value={navSearch}
+                      onChange={(e) => setNavSearch(e.target.value)} className="input w-full text-sm" />
+                    <div className="mt-1.5 space-y-1">
+                      {navFiltered.slice(0, 20).map((b) => (
+                        <button key={b.id} onClick={() => handleVisit(b)} disabled={navLoading}
+                          className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition-colors hover:bg-brand-50 ${b.name === currentNav ? "border-brand-400 bg-brand-50" : "border-slate-100"}`}
+                        >
+                          <div>
+                            <p className="font-medium text-slate-700">{b.name}</p>
+                            <p className="text-xs text-slate-400">{FLOOR_NAMES[b.floor] ?? `Piso ${b.floor}`}</p>
+                          </div>
+                          {b.name === currentNav
+                            ? <Badge color="brand">Actual</Badge>
+                            : <span className="text-xs text-brand-400">Ir →</span>
+                          }
+                        </button>
+                      ))}
+                    </div>
+                  </div>
 
-                  {navFiltered.slice(0, 30).map((b) => (
-                    <button key={b.id} onClick={() => handleVisit(b)} disabled={navLoading}
-                      className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition-colors hover:bg-brand-50 ${b.name === currentNav ? "border-brand-400 bg-brand-50" : "border-slate-100"}`}
-                    >
-                      <div>
-                        <p className="font-medium text-slate-700">{b.name}</p>
-                        <p className="text-xs text-slate-400">{FLOOR_NAMES[b.floor] ?? `Piso ${b.floor}`}</p>
+                  {/* Floor accordion — all floors with their buildings */}
+                  <div>
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Por piso</p>
+                    <NavFloorAccordion
+                      buildings={buildings}
+                      graphNodes={graphNodes}
+                      currentNav={currentNav}
+                      activeFloor={activeFloor}
+                      navLoading={navLoading}
+                      onVisitBuilding={handleVisit}
+                      onHighlightNode={(name, floor) => {
+                        sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name });
+                        showFloor(floor);
+                        setNavMsg(`Vista: ${name} (P${floor})`);
+                      }}
+                      onShowFloor={showFloor}
+                    />
+                  </div>
+
+                  {/* Search from graph nodes */}
+                  {graphNodes.length > 0 && (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50">
+                      <div className="border-b border-slate-200 px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Espacios del grafo</p>
+                        <input
+                          type="text"
+                          placeholder="Buscar espacio (aula, lab, sala...)..."
+                          value={nodeSearch}
+                          onChange={(e) => setNodeSearch(e.target.value)}
+                          className="mt-1.5 w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-brand-400"
+                        />
                       </div>
-                      {b.name === currentNav
-                        ? <Badge color="brand">Actual</Badge>
-                        : <span className="text-xs text-brand-400">Ir aquí →</span>
-                      }
-                    </button>
-                  ))}
+                      <div className="max-h-36 overflow-y-auto p-2">
+                        <div className="flex flex-wrap gap-1">
+                          {graphNodes
+                            .filter(n => !nodeSearch || n.name.toLowerCase().includes(nodeSearch.toLowerCase()))
+                            .slice(0, 48)
+                            .map((n) => {
+                              const catColors: Record<string, string> = {
+                                aula: "bg-amber-50 border-amber-300 text-amber-800",
+                                laboratorio: "bg-red-50 border-red-300 text-red-800",
+                                sala: "bg-green-50 border-green-300 text-green-800",
+                                oficina: "bg-purple-50 border-purple-300 text-purple-800",
+                                bano: "bg-slate-50 border-slate-300 text-slate-700",
+                                ascensor: "bg-blue-50 border-blue-300 text-blue-800",
+                                cafeteria: "bg-pink-50 border-pink-300 text-pink-800",
+                                auditorio: "bg-rose-50 border-rose-300 text-rose-800",
+                                bodega: "bg-stone-50 border-stone-300 text-stone-700",
+                                estar: "bg-teal-50 border-teal-300 text-teal-800",
+                                deporte: "bg-lime-50 border-lime-300 text-lime-800",
+                              };
+                              const cls = catColors[n.category] ?? "bg-white border-slate-200 text-slate-700";
+                              const isCurrent = n.name === currentNav;
+                              return (
+                                <button
+                                  key={n.id}
+                                  onClick={() => {
+                                    sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name: n.name });
+                                    showFloor(n.floor);
+                                    setNavMsg(`Vista: ${n.name} (P${n.floor})`);
+                                  }}
+                                  className={`rounded border px-2 py-0.5 text-[11px] transition-opacity hover:opacity-80 ${isCurrent ? "ring-2 ring-brand-400" : ""} ${cls}`}
+                                  title={`${n.name} — Piso ${n.floor}`}
+                                >
+                                  {n.name} <span className="opacity-60">P{n.floor}</span>
+                                </button>
+                              );
+                            })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -799,52 +867,111 @@ export default function Building3D() {
               {tab === "tours" && (
                 <div className="space-y-3">
                   {session ? (
-                    <div className="rounded-lg border border-brand-200 bg-brand-50 p-3">
-                      <p className="text-xs font-bold text-brand-700">Tour en curso: {session.tour_name}</p>
-                      <p className="mt-1 text-xs text-slate-600">Parada {session.current_stop.position} / {session.total_stops}</p>
-                      <p className="mt-2 text-sm font-semibold text-slate-800">{session.current_stop.building_name}</p>
-                      <p className="text-xs text-slate-400">{FLOOR_NAMES[session.current_stop.floor] ?? `Piso ${session.current_stop.floor}`}</p>
-
-                      {/* Route to current stop */}
-                      {tourRouteResult && (
-                        <div className="mt-2 rounded border border-brand-100 bg-white p-2 text-xs">
-                          <p className="font-medium text-brand-600">
-                            {tourRouteResult.origin_name} → {tourRouteResult.destination_name}
-                          </p>
-                          <p className="text-slate-500">{tourRouteResult.distance.toFixed(1)} m · {tourRouteResult.path.length} nodos</p>
-                          <div className="mt-1 flex flex-wrap items-center gap-0.5">
-                            {tourRouteResult.path.map((node, i) => (
-                              <span key={i} className="flex items-center gap-0.5">
-                                <span className={`rounded px-1 py-0.5 text-slate-700 shadow-sm ${i === 0 ? "bg-green-100 font-bold" : i === tourRouteResult.path.length - 1 ? "bg-red-100 font-bold" : "bg-white"}`}>
-                                  {node}
-                                </span>
-                                {i < tourRouteResult.path.length - 1 && <span className="text-slate-300">›</span>}
-                              </span>
-                            ))}
-                          </div>
+                    <div className="space-y-2">
+                      {/* Active session card */}
+                      <div className="rounded-lg border border-brand-200 bg-brand-50 p-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-bold text-brand-700">Tour en curso: {session.tour_name}</p>
+                          <Badge color="brand">{session.current_stop.position}/{session.total_stops}</Badge>
                         </div>
-                      )}
 
-                      <div className="mt-3 flex gap-2">
-                        <button onClick={handleTourPrev} className="btn-secondary flex-1 text-xs">← Ant.</button>
-                        <button onClick={handleTourNext} className="btn-primary flex-1 text-xs">Sig. →</button>
-                        <button onClick={handleEndTour}  className="btn-danger text-xs px-2">Fin</button>
+                        {/* Progress bar */}
+                        <div className="mt-2 h-1.5 w-full rounded-full bg-brand-100">
+                          <div
+                            className="h-1.5 rounded-full bg-brand-500 transition-all"
+                            style={{ width: `${(session.current_stop.position / session.total_stops) * 100}%` }}
+                          />
+                        </div>
+
+                        <div className="mt-2">
+                          <p className="text-sm font-semibold text-slate-800">{session.current_stop.building_name}</p>
+                          <p className="text-xs text-slate-400">{FLOOR_NAMES[session.current_stop.floor] ?? `Piso ${session.current_stop.floor}`}</p>
+                        </div>
+
+                        {/* Route to current stop */}
+                        {tourRouteResult && (
+                          <div className="mt-2 rounded border border-brand-100 bg-white p-2 text-xs">
+                            <p className="font-medium text-brand-600">
+                              {tourRouteResult.origin_name} → {tourRouteResult.destination_name}
+                            </p>
+                            <p className="text-slate-500">{tourRouteResult.distance.toFixed(1)} m · {tourRouteResult.path.length} nodos</p>
+                            <div className="mt-1 flex flex-wrap items-center gap-0.5">
+                              {tourRouteResult.path.map((node, i) => (
+                                <span key={i} className="flex items-center gap-0.5">
+                                  <span className={`rounded px-1 py-0.5 text-slate-700 shadow-sm ${i === 0 ? "bg-green-100 font-bold" : i === tourRouteResult.path.length - 1 ? "bg-red-100 font-bold" : "bg-white"}`}>
+                                    {node}
+                                  </span>
+                                  {i < tourRouteResult.path.length - 1 && <span className="text-slate-300">›</span>}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="mt-3 flex gap-2">
+                          <button onClick={handleTourPrev} className="btn-secondary flex-1 text-xs">← Ant.</button>
+                          <button onClick={handleTourNext} className="btn-primary flex-1 text-xs">Sig. →</button>
+                          <button onClick={handleEndTour}  className="btn-danger text-xs px-2">Fin</button>
+                        </div>
                       </div>
+
+                      {/* Stop list of current tour */}
+                      {tours.length > 0 && (() => {
+                        const activeTour = tours.find(t => t.name === session.tour_name);
+                        return activeTour ? (
+                          <div className="rounded-lg border border-slate-100">
+                            <p className="border-b border-slate-100 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                              Paradas del tour
+                            </p>
+                            <div className="p-2 space-y-1">
+                              {Array.from({ length: session.total_stops }, (_, i) => i + 1).map((pos) => {
+                                const isCurrent = pos === session.current_stop.position;
+                                const isDone    = pos < session.current_stop.position;
+                                return (
+                                  <div key={pos} className={`flex items-center gap-2 rounded px-2 py-1.5 text-xs ${isCurrent ? "bg-brand-50 ring-1 ring-brand-300" : isDone ? "opacity-50" : ""}`}>
+                                    <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${isCurrent ? "bg-brand-600 text-white" : isDone ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>
+                                      {isDone ? "✓" : pos}
+                                    </span>
+                                    <span className={`flex-1 ${isCurrent ? "font-semibold text-brand-700" : "text-slate-600"}`}>
+                                      {isCurrent ? session.current_stop.building_name : `Parada ${pos}`}
+                                    </span>
+                                    {isCurrent && <Badge color="brand">Actual</Badge>}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : null;
+                      })()}
                     </div>
                   ) : (
                     <p className="text-xs text-slate-500">Elige un tour para iniciar.</p>
                   )}
+
+                  {/* Tour list */}
                   {tours.map((tour) => (
                     <div key={tour.id} className="rounded-lg border border-slate-100 p-3">
-                      <p className="text-sm font-medium text-slate-700">{tour.name}</p>
-                      {tour.description && <p className="text-xs text-slate-400">{tour.description}</p>}
-                      <div className="mt-2 flex items-center justify-between">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-slate-700">{tour.name}</p>
+                          {tour.description && <p className="mt-0.5 text-xs text-slate-400">{tour.description}</p>}
+                        </div>
                         <Badge color="brand">{tour.stop_count} paradas</Badge>
-                        {!session && <button onClick={() => handleStartTour(tour.id)} disabled={tourLoading} className="btn-primary px-3 py-1 text-xs">Iniciar</button>}
                       </div>
+                      {!session && (
+                        <button
+                          onClick={() => handleStartTour(tour.id)}
+                          disabled={tourLoading}
+                          className="btn-primary mt-2 w-full px-3 py-1 text-xs"
+                        >
+                          ▶ Iniciar tour
+                        </button>
+                      )}
                     </div>
                   ))}
-                  {tours.length === 0 && <p className="text-xs text-slate-400">No hay tours disponibles.</p>}
+                  {tours.length === 0 && (
+                    <p className="py-4 text-center text-xs text-slate-400">No hay tours disponibles.</p>
+                  )}
                 </div>
               )}
 
@@ -989,6 +1116,153 @@ function SpaceDirectory({ showFloor, activeFloor }: { showFloor: (f: number) => 
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── NavFloorAccordion ────────────────────────────────────────────────────────
+const FLOOR_COLORS: Record<number, string> = {
+  0: "bg-slate-100 text-slate-700 border-slate-300",
+  1: "bg-blue-100 text-blue-700 border-blue-300",
+  2: "bg-green-100 text-green-700 border-green-300",
+  3: "bg-amber-100 text-amber-700 border-amber-300",
+  4: "bg-purple-100 text-purple-700 border-purple-300",
+  5: "bg-rose-100 text-rose-700 border-rose-300",
+};
+
+const FLOOR_LABELS: Record<number, string> = {
+  0: "Piso cero",
+  1: "Primer piso",
+  2: "Segundo piso",
+  3: "Tercer piso",
+  4: "Cuarto piso",
+  5: "Quinto piso",
+};
+
+function NavFloorAccordion({
+  buildings,
+  graphNodes,
+  currentNav,
+  activeFloor,
+  navLoading,
+  onVisitBuilding,
+  onHighlightNode,
+  onShowFloor,
+}: {
+  buildings: Building[];
+  graphNodes: Array<{ id: number; name: string; floor: number; category: string }>;
+  currentNav: string;
+  activeFloor: number | null;
+  navLoading: boolean;
+  onVisitBuilding: (b: Building) => void;
+  onHighlightNode: (name: string, floor: number) => void;
+  onShowFloor: (floor: number) => void;
+}) {
+  const [openFloor, setOpenFloor] = useState<number | null>(null);
+
+  const catColors: Record<string, string> = {
+    aula:       "bg-amber-50  border-amber-300  text-amber-800",
+    laboratorio:"bg-red-50    border-red-300    text-red-800",
+    sala:       "bg-green-50  border-green-300  text-green-800",
+    oficina:    "bg-purple-50 border-purple-300 text-purple-800",
+    bano:       "bg-slate-50  border-slate-300  text-slate-700",
+    ascensor:   "bg-blue-50   border-blue-300   text-blue-800",
+    cafeteria:  "bg-pink-50   border-pink-300   text-pink-800",
+    auditorio:  "bg-rose-50   border-rose-300   text-rose-800",
+    bodega:     "bg-stone-50  border-stone-300  text-stone-700",
+    estar:      "bg-teal-50   border-teal-300   text-teal-800",
+    deporte:    "bg-lime-50   border-lime-300   text-lime-800",
+  };
+
+  return (
+    <div className="space-y-1">
+      {[0, 1, 2, 3, 4, 5].map((floor) => {
+        const floorBuildings = buildings.filter((b) => b.floor === floor);
+        const floorNodes     = graphNodes.filter((n) => n.floor === floor);
+        const isOpen         = openFloor === floor;
+        const isActive       = activeFloor === floor;
+        const colorCls       = FLOOR_COLORS[floor] ?? "bg-slate-100 text-slate-700 border-slate-300";
+        const totalItems     = floorBuildings.length + floorNodes.length;
+
+        return (
+          <div key={floor} className={`overflow-hidden rounded-lg border transition-all ${isActive ? "border-brand-400" : "border-slate-200"}`}>
+            {/* Floor header */}
+            <button
+              onClick={() => {
+                setOpenFloor(isOpen ? null : floor);
+                onShowFloor(floor);
+              }}
+              className={`flex w-full items-center justify-between px-3 py-2.5 text-left ${isOpen ? "bg-slate-50" : "hover:bg-slate-50"}`}
+            >
+              <div className="flex items-center gap-2">
+                <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold border ${colorCls}`}>
+                  P{floor}
+                </span>
+                <span className="text-xs font-semibold text-slate-700">{FLOOR_LABELS[floor]}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-400">{totalItems} espacios</span>
+                <span className="text-xs text-slate-400">{isOpen ? "▲" : "▼"}</span>
+              </div>
+            </button>
+
+            {/* Floor content */}
+            {isOpen && (
+              <div className="border-t border-slate-100 p-2 space-y-2">
+
+                {/* API buildings on this floor */}
+                {floorBuildings.length > 0 && (
+                  <div>
+                    <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Edificios registrados</p>
+                    <div className="space-y-1">
+                      {floorBuildings.map((b) => (
+                        <button
+                          key={b.id}
+                          onClick={() => onVisitBuilding(b)}
+                          disabled={navLoading}
+                          className={`flex w-full items-center justify-between rounded-lg border px-2.5 py-2 text-left text-xs transition-colors hover:bg-brand-50 ${b.name === currentNav ? "border-brand-400 bg-brand-50 font-semibold" : "border-slate-100"}`}
+                        >
+                          <span className="text-slate-700">{b.name}</span>
+                          {b.name === currentNav
+                            ? <span className="rounded-full bg-brand-600 px-1.5 py-0.5 text-[10px] font-bold text-white">Actual</span>
+                            : <span className="text-[10px] text-brand-400">Ir →</span>
+                          }
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Graph nodes on this floor */}
+                {floorNodes.length > 0 && (
+                  <div>
+                    <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Espacios del grafo</p>
+                    <div className="flex flex-wrap gap-1">
+                      {floorNodes.map((n) => {
+                        const cls = catColors[n.category] ?? "bg-white border-slate-200 text-slate-700";
+                        return (
+                          <button
+                            key={n.id}
+                            onClick={() => onHighlightNode(n.name, n.floor)}
+                            className={`rounded border px-1.5 py-0.5 text-[11px] transition-opacity hover:opacity-80 ${cls}`}
+                            title={n.name}
+                          >
+                            {n.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {floorBuildings.length === 0 && floorNodes.length === 0 && (
+                  <p className="py-1 text-center text-[11px] text-slate-400">Sin espacios registrados</p>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
