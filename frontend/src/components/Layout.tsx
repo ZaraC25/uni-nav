@@ -19,24 +19,9 @@ const Icons: Record<string, JSX.Element> = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
     </svg>
   ),
-  campus: (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-    </svg>
-  ),
-  floors: (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-    </svg>
-  ),
   paths: (
     <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-    </svg>
-  ),
-  history: (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
     </svg>
   ),
   settings: (
@@ -58,10 +43,7 @@ const navItems: NavItem[] = [
   { to: "/", label: "Dashboard", iconKey: "dashboard" },
   { to: "/building-3d", label: "Modelo 3D", iconKey: "building3d" },
   { to: "/graph", label: "Grafo", iconKey: "graph" },
-  { to: "/campus", label: "Jerarquía", iconKey: "campus" },
-  { to: "/floors", label: "Pisos", iconKey: "floors" },
   { to: "/paths", label: "Senderos", iconKey: "paths", adminOnly: true },
-  { to: "/history", label: "Historial", iconKey: "history" },
   { to: "/settings", label: "Ajustes", iconKey: "settings" },
 ];
 

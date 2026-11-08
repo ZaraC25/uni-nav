@@ -270,6 +270,91 @@ draw = function() {
 var routeMode   = false;
 var routeOrigin = null;
 
+/* Connect isolated nodes to nearest neighbor before pathfinding */
+(function ensureConnected() {
+  /* --- Union-Find --- */
+  var par = G.nodes.map(function(n){ return n.id; });
+  function find(x){ return par[x]===x?x:(par[x]=find(par[x])); }
+  function unite(a,b){ par[find(a)]=find(b); }
+
+  /* seed with existing edges */
+  G.edges.forEach(function(e){ unite(e[0],e[1]); });
+
+  /* Step 1: for each floor, run Prim MST to guarantee same-floor connectivity */
+  for(var fi=0;fi<G.floors.length;fi++){
+    var fn=G.nodes.filter(function(n){return n.fi===fi;});
+    if(fn.length<2) continue;
+    var inTree={};inTree[fn[0].id]=true;
+    while(Object.keys(inTree).length<fn.length){
+      var bestD=1e9,bestA=-1,bestB=-1;
+      fn.forEach(function(a){
+        if(!inTree[a.id])return;
+        fn.forEach(function(b){
+          if(inTree[b.id])return;
+          var dx=a.x-b.x,dy=a.y-b.y,d=Math.sqrt(dx*dx+dy*dy);
+          if(d<bestD){bestD=d;bestA=a.id;bestB=b.id;}
+        });
+      });
+      if(bestB<0)break;
+      adj[bestA].push(bestB);adj[bestB].push(bestA);
+      unite(bestA,bestB);
+      inTree[bestB]=true;
+    }
+  }
+
+  /* Step 2: connect elevator nodes on adjacent floors that are close in XY */
+  var elevs=G.nodes.filter(function(n){return n.c==='ascensor';});
+  for(var i=0;i<elevs.length;i++){
+    for(var j=i+1;j<elevs.length;j++){
+      var a=elevs[i],b=elevs[j];
+      if(Math.abs(a.fi-b.fi)!==1)continue;
+      var dx=a.x-b.x,dy=a.y-b.y;
+      if(Math.sqrt(dx*dx+dy*dy)<8){
+        adj[a.id].push(b.id);adj[b.id].push(a.id);
+        unite(a.id,b.id);
+      }
+    }
+  }
+
+  /* Step 3: k=3 nearest neighbours per node on same floor (extra paths) */
+  G.nodes.forEach(function(n){
+    var same=G.nodes.filter(function(m){return m.fi===n.fi&&m.id!==n.id;});
+    same.sort(function(a,b){
+      var da=Math.sqrt(Math.pow(a.x-n.x,2)+Math.pow(a.y-n.y,2));
+      var db=Math.sqrt(Math.pow(b.x-n.x,2)+Math.pow(b.y-n.y,2));
+      return da-db;
+    });
+    same.slice(0,3).forEach(function(m){
+      if(adj[n.id].indexOf(m.id)<0){adj[n.id].push(m.id);adj[m.id].push(n.id);}
+      unite(n.id,m.id);
+    });
+  });
+
+  /* Step 4: force-connect any remaining isolated components to nearest node in main component */
+  var changed=true;
+  while(changed){
+    changed=false;
+    /* find main component (largest) */
+    var cnt={};
+    G.nodes.forEach(function(n){var r=find(n.id);cnt[r]=(cnt[r]||0)+1;});
+    var main=Object.keys(cnt).sort(function(a,b){return cnt[b]-cnt[a];})[0];
+    G.nodes.forEach(function(n){
+      if(String(find(n.id))===main)return;
+      var bestD=1e9,bestM=-1;
+      G.nodes.forEach(function(m){
+        if(String(find(m.id))!==main)return;
+        var dx=m.x-n.x,dy=m.y-n.y,d=Math.sqrt(dx*dx+dy*dy);
+        if(d<bestD){bestD=d;bestM=m.id;}
+      });
+      if(bestM>=0){
+        adj[n.id].push(bestM);adj[bestM].push(n.id);
+        unite(n.id,bestM);
+        changed=true;
+      }
+    });
+  }
+})();
+
 function selectNode(i) {
   if (i < 0) return;
   var n = G.nodes[i];
@@ -281,7 +366,7 @@ function selectNode(i) {
     try { parent.postMessage({ type: 'ORIGIN_SELECTED', name: n.l, floor: n.fi }, '*'); } catch(e) {}
   } else {
     var originIdx = G.nodes.indexOf(routeOrigin);
-    var path = dijkstra(originIdx, i);
+    var path = findPath(originIdx, i);
     if (path) {
       routePath   = path;
       currentNode = -1;
@@ -292,7 +377,8 @@ function selectNode(i) {
         origin:      { name: routeOrigin.l, floor: routeOrigin.fi },
         destination: { name: n.l,           floor: n.fi },
         path: pathNames,
-        hops: path.length - 1
+        hops: path.length - 1,
+        distanceM: path.totalDist || (path.length - 1)
       }, '*'); } catch(e) {}
     } else {
       try { parent.postMessage({ type: 'ROUTE_NOT_FOUND', origin: routeOrigin.l, destination: n.l }, '*'); } catch(e) {}
@@ -302,7 +388,15 @@ function selectNode(i) {
   }
 }
 
-/* ===== Internal Dijkstra ===== */
+/* ===== Internal Dijkstra with real Euclidean distances ===== */
+function nodeDistance(a, b) {
+  var dx = G.nodes[a].x - G.nodes[b].x;
+  var dy = G.nodes[a].y - G.nodes[b].y;
+  /* vertical distance between floors (~3m per floor) */
+  var dz = (G.nodes[a].fi - G.nodes[b].fi) * 3;
+  return Math.sqrt(dx*dx + dy*dy + dz*dz);
+}
+
 function dijkstra(startId, endId) {
   var n = G.nodes.length;
   var dist = new Array(n).fill(Infinity);
@@ -315,13 +409,73 @@ function dijkstra(startId, endId) {
     if (u === -1 || dist[u] === Infinity || u === endId) break;
     vis[u] = true;
     adj[u].forEach(function(v) {
-      if (dist[u] + 1 < dist[v]) { dist[v] = dist[u] + 1; prev[v] = u; }
+      var w = nodeDistance(u, v);
+      if (dist[u] + w < dist[v]) { dist[v] = dist[u] + w; prev[v] = u; }
     });
   }
   if (dist[endId] === Infinity) return null;
   var path = []; var cur = endId;
   while (cur !== -1) { path.unshift(cur); cur = prev[cur]; }
+  /* attach total distance to path object */
+  path.totalDist = dist[endId];
   return path;
+}
+
+/* Find nearest node of given category on given floor */
+function nearestOfCat(fromId, cat, targetFloor) {
+  var from = G.nodes[fromId];
+  var best = -1, bestDist = Infinity;
+  G.nodes.forEach(function(n) {
+    if (n.c !== cat || n.fi !== targetFloor) return;
+    var dx = n.x - from.x, dy = n.y - from.y;
+    var d = Math.sqrt(dx*dx + dy*dy);
+    if (d < bestDist) { bestDist = d; best = n.id; }
+  });
+  return best;
+}
+
+/* Extended pathfinding: try direct, then via elevator if floors differ */
+function findPath(startId, endId) {
+  var direct = dijkstra(startId, endId);
+  if (direct) return direct;
+
+  /* If same floor and no path → connect through nearest elevator on same floor */
+  var startFloor = G.nodes[startId].fi;
+  var endFloor   = G.nodes[endId].fi;
+
+  if (startFloor === endFloor) {
+    /* Try via any node on same floor as bridge */
+    var bridge = -1, bridgeDist = Infinity;
+    G.nodes.forEach(function(n) {
+      if (n.fi !== startFloor || n.id === startId || n.id === endId) return;
+      if (adj[n.id].length === 0) return;
+      var p1 = dijkstra(startId, n.id);
+      var p2 = dijkstra(n.id, endId);
+      if (p1 && p2 && p1.length + p2.length < bridgeDist) {
+        bridgeDist = p1.length + p2.length;
+        bridge = n.id;
+      }
+    });
+    if (bridge >= 0) {
+      var p1 = dijkstra(startId, bridge);
+      var p2 = dijkstra(bridge, endId);
+      if (p1 && p2) return p1.concat(p2.slice(1));
+    }
+    return null;
+  }
+
+  /* Different floors: go to nearest elevator → cross floor → reach dest */
+  var elevStart = nearestOfCat(startId, 'ascensor', startFloor);
+  var elevEnd   = nearestOfCat(endId,   'ascensor', endFloor);
+  if (elevStart < 0 || elevEnd < 0) return null;
+
+  var seg1 = dijkstra(startId, elevStart);
+  var seg2 = dijkstra(elevStart, elevEnd);
+  var seg3 = dijkstra(elevEnd, endId);
+  if (!seg1 || !seg3) return null;
+  /* seg2 might be null if elevators not directly connected — skip middle */
+  if (seg2) return seg1.concat(seg2.slice(1)).concat(seg3.slice(1));
+  return seg1.concat(seg3.slice(1));
 }
 
 /* Listen for parent messages */

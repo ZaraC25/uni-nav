@@ -73,7 +73,7 @@ export default function Register() {
         </svg>
         <img
           className="h-56 w-full rounded object-cover shadow-lg md:h-96 lg:h-full lg:rounded-none lg:shadow-none"
-          src="https://images.pexels.com/photos/3184291/pexels-photo-3184291.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=1260"
+          src="/universidad-cooperativa-de-colombia---sede-pasto-004289_large.jpg"
           alt="Registro UniNav"
         />
       </div>
@@ -82,20 +82,12 @@ export default function Register() {
       <div className="relative mx-auto flex w-full max-w-xl flex-col items-start px-4 md:px-0 lg:max-w-screen-xl lg:px-8">
         <div className="mb-16 lg:my-40 lg:max-w-lg lg:pr-5">
 
-          <span className="mb-4 inline-block rounded-full bg-brand-100 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-brand-700">
-            UniNav
-          </span>
-
           <h2 className="mb-5 font-sans text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl sm:leading-none">
             Crea tu cuenta<br className="hidden md:block" />
             y empieza a{" "}
             <span className="inline-block text-brand-600">navegar</span>
           </h2>
 
-          <p className="mb-8 pr-5 text-base text-gray-600 md:text-lg">
-            Regístrate para calcular rutas, explorar el campus, unirte a tours guiados
-            y llevar el registro de tus recorridos universitarios.
-          </p>
 
           {serverError && (
             <div className="mb-6">

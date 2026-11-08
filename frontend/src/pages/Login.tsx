@@ -61,9 +61,9 @@ export default function Login() {
     <div className="relative min-h-screen">
       {/* Background photo */}
       <img
-        src="https://images.pexels.com/photos/3747463/pexels-photo-3747463.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=1260"
+        src="/ucc_pasto.jpg"
         className="absolute inset-0 h-full w-full object-cover"
-        alt="Campus background"
+        alt="Campus UCC Pasto"
       />
 
       {/* Dark overlay */}

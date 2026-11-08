@@ -84,7 +84,7 @@ const SPACE_DIRECTORY: { category: string; color: string; items: SpaceEntry[] }[
   },
 ];
 
-type Tab = "buildings" | "routes" | "navigation" | "tours" | "queues" | "rankings";
+type Tab = "buildings" | "routes" | "navigation" | "tours";
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default function Building3D() {
@@ -138,6 +138,14 @@ export default function Building3D() {
   // graph nodes received from iframe
   const [graphNodes, setGraphNodes] = useState<Array<{id: number; name: string; floor: number; category: string}>>([]);
   const [nodeSearch, setNodeSearch] = useState("");
+
+  // ── active journey (step-by-step navigation through a route) ─────────────
+  const [journeyPath,    setJourneyPath]    = useState<string[]>([]);   // node names
+  const [journeyStep,    setJourneyStep]    = useState(0);              // current index
+  const [journeyActive,  setJourneyActive]  = useState(false);
+  const [journeyDist,    setJourneyDist]    = useState(0);
+  const [journeySaved,   setJourneySaved]   = useState(false);
+  const [journeySaveMsg, setJourneySaveMsg] = useState("");
   const [routePickStep,       setRoutePickStep]       = useState<"idle" | "destination" | "done">("idle");
   const [routePickOriginName, setRoutePickOriginName] = useState("");
 
@@ -196,12 +204,12 @@ export default function Building3D() {
       if (d.type === "ROUTE_CALCULATED") {
         setRoutePickStep("done");
         setRoutePickOriginName("");
-        // Show as a synthetic result in the panel
+        const realDist = typeof d.distanceM === "number" ? d.distanceM : (d.hops as number) * 10;
         setRouteResult({
           origin_name:      (d.origin as { name: string }).name,
           destination_name: (d.destination as { name: string }).name,
           path:             d.path as string[],
-          distance:         (d.hops as number) * 15, // ~15m per hop estimate
+          distance:         realDist,
           steps: [],
         } as RouteResponse);
         setRouteError("");
@@ -269,6 +277,85 @@ export default function Building3D() {
   const handleRoute = () => {
     if (!originId || !destId) return;
     triggerRouteCalc(originId as number, destId as number);
+  };
+
+  // ── journey (step-by-step walk through a route) ───────────────────────────
+  const startJourney = (path: string[], distM: number) => {
+    setJourneyPath(path);
+    setJourneyStep(0);
+    setJourneyActive(true);
+    setJourneyDist(distM);
+    setJourneySaved(false);
+    setJourneySaveMsg("");
+    setTab("navigation");
+    // highlight first node
+    sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name: path[0] });
+    // find floor of first node
+    const firstNode = graphNodes.find(n => n.name === path[0]);
+    if (firstNode) showFloor(firstNode.floor);
+  };
+
+  const journeyNext = () => {
+    const next = journeyStep + 1;
+    if (next >= journeyPath.length) return;
+    setJourneyStep(next);
+    const nodeName = journeyPath[next];
+    sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name: nodeName });
+    const node = graphNodes.find(n => n.name === nodeName);
+    if (node) showFloor(node.floor);
+    // register visit in navigation history if it matches a building
+    const building = buildingsRef.current.find(b => b.name.toLowerCase() === nodeName.toLowerCase());
+    if (building) api.visitPlace(building.id).catch(() => {});
+  };
+
+  const journeyPrev = () => {
+    const prev = journeyStep - 1;
+    if (prev < 0) return;
+    setJourneyStep(prev);
+    const nodeName = journeyPath[prev];
+    sendMsg(graphRef.current, { type: "HIGHLIGHT_NODE", name: nodeName });
+    const node = graphNodes.find(n => n.name === nodeName);
+    if (node) showFloor(node.floor);
+  };
+
+  const journeyFinish = async () => {
+    setJourneyActive(false);
+    sendMsg(graphRef.current, { type: "CLEAR_HIGHLIGHT" });
+
+    // Match every node in the path to a building ID (in order, deduplicated)
+    const ids: number[] = [];
+    for (const name of journeyPath) {
+      const b = buildingsRef.current.find(
+        bld => bld.name.toLowerCase() === name.toLowerCase()
+      );
+      if (b && !ids.includes(b.id)) ids.push(b.id);
+    }
+
+    const origin = journeyPath[0];
+    const dest   = journeyPath[journeyPath.length - 1];
+    const tourName = `Viaje: ${origin} → ${dest}`;
+    const tourDesc = `${journeyPath.length} paradas · ${journeyDist.toFixed(1)} m · ~${Math.round(journeyDist / 1.4)} s`;
+
+    if (ids.length >= 2) {
+      try {
+        await api.createTour({ name: tourName, description: tourDesc, building_ids: ids });
+        setJourneySaved(true);
+        setJourneySaveMsg(`✅ Viaje guardado en Tours con ${ids.length} paradas`);
+        const t = await api.listTours();
+        setTours(t);
+      } catch {
+        setJourneySaveMsg("⚠️ Viaje completado — no se pudo guardar (edificios no registrados en el sistema)");
+      }
+    } else {
+      // Still save as tour with just origin+dest if we have at least 1 building
+      if (ids.length === 1) {
+        setJourneySaveMsg(`⚠️ Solo se encontró 1 edificio registrado. Viaje completado: ${origin} → ${dest}`);
+      } else {
+        setJourneySaveMsg(`Viaje completado: ${origin} → ${dest} (${journeyPath.length} paradas)`);
+      }
+    }
+    setJourneyPath([]);
+    setJourneyStep(0);
   };
 
   // Send a PICK_NODE to the graph (triggers selectNode inside iframe)
@@ -356,6 +443,47 @@ export default function Building3D() {
         showFloor(cur.floor);
       }
     } catch { /* ignore */ }
+  };
+
+  // ── save nav trail as tour ────────────────────────────────────────────────
+  const [savingTour,    setSavingTour]    = useState(false);
+  const [tourSaveMsg,   setTourSaveMsg]   = useState("");
+  const [showSaveTour,  setShowSaveTour]  = useState(false);
+  const [newTourName,   setNewTourName]   = useState("");
+
+  const handleSaveNavAsTour = async () => {
+    if (!newTourName.trim() || navTrail.length < 2) return;
+    setSavingTour(true);
+    setTourSaveMsg("");
+    try {
+      // Match trail names to building IDs
+      const ids: number[] = [];
+      for (const name of navTrail) {
+        const match = buildingsRef.current.find(
+          (b) => b.name.toLowerCase() === name.toLowerCase()
+        );
+        if (match && !ids.includes(match.id)) ids.push(match.id);
+      }
+      if (ids.length < 2) {
+        setTourSaveMsg("Se necesitan al menos 2 edificios registrados en el rastro.");
+        return;
+      }
+      await api.createTour({
+        name: newTourName.trim(),
+        description: `Guardado desde navegación — ${ids.length} paradas`,
+        building_ids: ids,
+      });
+      setTourSaveMsg(`✅ Tour "${newTourName.trim()}" guardado con ${ids.length} paradas.`);
+      setNewTourName("");
+      setShowSaveTour(false);
+      // Refresh tours list
+      const t = await api.listTours();
+      setTours(t);
+    } catch {
+      setTourSaveMsg("No se pudo guardar el tour.");
+    } finally {
+      setSavingTour(false);
+    }
   };
 
   const handleClearNav = async () => {
@@ -563,7 +691,7 @@ export default function Building3D() {
 
         {/* Tabs */}
         <div className="flex overflow-x-auto border-b border-slate-100 px-2 pt-1">
-          {([ ["buildings","Edificios"], ["routes","Rutas"], ["navigation","Navegar"], ["tours","Tours"], ["queues","Colas"], ["rankings","Rankings"] ] as [Tab, string][]).map(([key, label]) => (
+          {([ ["buildings","Edificios"], ["routes","Rutas"], ["navigation","Navegar"], ["tours","Tours"] ] as [Tab, string][]).map(([key, label]) => (
             <button
               key={key}
               onClick={() => setTab(key)}
@@ -618,7 +746,7 @@ export default function Building3D() {
                   }`}>
                     {routePickStep === "idle" && <>🖱️ <strong>Clic en el grafo</strong> o busca abajo para seleccionar el <strong>origen</strong></>}
                     {routePickStep === "destination" && <>✅ Origen: <strong>{routePickOriginName}</strong> — ahora selecciona el <strong>destino</strong></>}
-                    {routePickStep === "done" && !routeLoading && routeResult && <>✅ <strong>{routeResult.path.length - 1} saltos</strong> · Haz clic de nuevo para nueva ruta</>}
+                    {routePickStep === "done" && !routeLoading && routeResult && <>✅ <strong>{routeResult.distance.toFixed(1)} m</strong> · ~{Math.round(routeResult.distance / 1.4)} s · Clic para nueva ruta</>}
                     {routePickStep === "done" && routeLoading && <>⏳ Calculando...</>}
                   </div>
 
@@ -693,11 +821,28 @@ export default function Building3D() {
                       <p className="font-semibold text-brand-700">
                         {routeResult.origin_name} → {routeResult.destination_name}
                       </p>
-                      <p className="mt-1 text-slate-600">
-                        <strong>{routeResult.path.length - 1} saltos</strong> · ~{routeResult.distance.toFixed(0)} m estimado
-                      </p>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        <span className="rounded bg-brand-100 px-2 py-0.5 font-bold text-brand-700">
+                          {routeResult.distance.toFixed(1)} m
+                        </span>
+                        <span className="rounded bg-slate-100 px-2 py-0.5 text-slate-600">
+                          ~{Math.round(routeResult.distance / 1.4)} s caminando
+                        </span>
+                        <span className="rounded bg-slate-100 px-2 py-0.5 text-slate-600">
+                          {routeResult.path.length} nodos
+                        </span>
+                      </div>
+
+                      {/* Start journey button */}
+                      <button
+                        onClick={() => startJourney(routeResult.path, routeResult.distance)}
+                        className="mt-2 w-full rounded-lg bg-emerald-600 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 transition-colors"
+                      >
+                        🚶 Iniciar viaje paso a paso
+                      </button>
+
                       <div className="mt-3">
-                        <p className="mb-1 font-medium text-slate-600">Camino ({routeResult.path.length} nodos):</p>
+                        <p className="mb-1 font-medium text-slate-600">Camino:</p>
                         <div className="flex flex-wrap items-center gap-1">
                           {routeResult.path.map((node, i) => (
                             <span key={i} className="flex items-center gap-0.5">
@@ -722,6 +867,69 @@ export default function Building3D() {
                     Selecciona un sitio para visitarlo — se calcula la ruta desde tu posición actual y el grafo resalta el camino.
                   </div>
 
+                  {/* ── Active journey panel ──────────────────────────── */}
+                  {journeyActive && (
+                    <div className="rounded-lg border-2 border-emerald-400 bg-emerald-50 p-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-bold text-emerald-700">🚶 Viaje en curso</p>
+                        <span className="text-[11px] text-emerald-600">{journeyStep + 1} / {journeyPath.length}</span>
+                      </div>
+
+                      {/* Progress bar */}
+                      <div className="mt-1.5 h-1.5 w-full rounded-full bg-emerald-100">
+                        <div
+                          className="h-1.5 rounded-full bg-emerald-500 transition-all"
+                          style={{ width: `${((journeyStep + 1) / journeyPath.length) * 100}%` }}
+                        />
+                      </div>
+
+                      {/* Current node */}
+                      <div className="mt-2 rounded-lg bg-white p-2 text-xs">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Estás en</p>
+                        <p className="font-semibold text-slate-800">{journeyPath[journeyStep]}</p>
+                        {journeyStep < journeyPath.length - 1 && (
+                          <p className="mt-0.5 text-slate-400">
+                            Siguiente: <span className="font-medium text-slate-600">{journeyPath[journeyStep + 1]}</span>
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Navigation controls */}
+                      <div className="mt-2 flex gap-1.5">
+                        <button onClick={journeyPrev} disabled={journeyStep === 0}
+                          className="btn-secondary flex-1 py-1 text-xs disabled:opacity-40">← Atrás</button>
+                        {journeyStep < journeyPath.length - 1 ? (
+                          <button onClick={journeyNext} className="btn-primary flex-1 py-1 text-xs">Avanzar →</button>
+                        ) : (
+                          <button onClick={journeyFinish} className="flex-1 rounded-lg bg-emerald-600 py-1 text-xs font-semibold text-white hover:bg-emerald-700">
+                            ✅ Terminar viaje
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Path overview */}
+                      <div className="mt-2 flex flex-wrap items-center gap-0.5">
+                        {journeyPath.map((node, i) => (
+                          <span key={i} className="flex items-center gap-0.5">
+                            <span className={`rounded px-1 py-0.5 text-[10px] ${
+                              i === journeyStep ? "bg-emerald-500 font-bold text-white" :
+                              i < journeyStep ? "bg-emerald-100 text-emerald-700 line-through" :
+                              "bg-white text-slate-500 shadow-sm"
+                            }`}>{node}</span>
+                            {i < journeyPath.length - 1 && <span className="text-slate-200">›</span>}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Journey finished message */}
+                  {!journeyActive && journeySaveMsg && (
+                    <div className={`rounded-lg px-3 py-2 text-xs font-medium ${journeySaved ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-slate-50 text-slate-600"}`}>
+                      {journeySaveMsg}
+                    </div>
+                  )}
+
                   {/* Trail + nav controls */}
                   {navTrail.length > 0 && (
                     <div className="rounded-lg border border-slate-100 p-2">
@@ -738,6 +946,50 @@ export default function Building3D() {
                         <button onClick={handleNavForward} className="btn-secondary flex-1 text-xs py-1">Adelante →</button>
                         <button onClick={handleClearNav}   className="btn-secondary text-xs py-1 px-2">✕ Limpiar</button>
                       </div>
+
+                      {/* Save as Tour */}
+                      {navTrail.length >= 2 && (
+                        <div className="mt-2 border-t border-slate-100 pt-2">
+                          {!showSaveTour ? (
+                            <button
+                              onClick={() => { setShowSaveTour(true); setNewTourName(`Mi recorrido ${new Date().toLocaleDateString("es-ES")}`); }}
+                              className="btn-secondary w-full text-xs py-1"
+                            >
+                              💾 Guardar recorrido como Tour
+                            </button>
+                          ) : (
+                            <div className="space-y-1.5">
+                              <input
+                                type="text"
+                                value={newTourName}
+                                onChange={(e) => setNewTourName(e.target.value)}
+                                placeholder="Nombre del tour..."
+                                className="w-full rounded border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-brand-400"
+                              />
+                              <div className="flex gap-1.5">
+                                <button
+                                  onClick={handleSaveNavAsTour}
+                                  disabled={savingTour || !newTourName.trim()}
+                                  className="btn-primary flex-1 text-xs py-1"
+                                >
+                                  {savingTour ? "Guardando..." : "Guardar"}
+                                </button>
+                                <button
+                                  onClick={() => { setShowSaveTour(false); setTourSaveMsg(""); }}
+                                  className="btn-secondary text-xs py-1 px-2"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          {tourSaveMsg && (
+                            <p className={`mt-1 text-[11px] ${tourSaveMsg.startsWith("✅") ? "text-green-600" : "text-red-500"}`}>
+                              {tourSaveMsg}
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -748,7 +1000,7 @@ export default function Building3D() {
                         {navRouteResult.origin_name} → {navRouteResult.destination_name}
                       </p>
                       <p className="mt-0.5 text-slate-600">
-                        {navRouteResult.distance.toFixed(1)} m · {navRouteResult.path.length} nodos
+                        {navRouteResult.distance.toFixed(1)} m · ~{Math.round(navRouteResult.distance / 1.4)} s · {navRouteResult.path.length} nodos
                       </p>
                       <div className="mt-1.5 flex flex-wrap items-center gap-0.5">
                         {navRouteResult.path.map((node, i) => (
@@ -894,7 +1146,7 @@ export default function Building3D() {
                             <p className="font-medium text-brand-600">
                               {tourRouteResult.origin_name} → {tourRouteResult.destination_name}
                             </p>
-                            <p className="text-slate-500">{tourRouteResult.distance.toFixed(1)} m · {tourRouteResult.path.length} nodos</p>
+                            <p className="text-slate-500">{tourRouteResult.distance.toFixed(1)} m · ~{Math.round(tourRouteResult.distance / 1.4)} s · {tourRouteResult.path.length} nodos</p>
                             <div className="mt-1 flex flex-wrap items-center gap-0.5">
                               {tourRouteResult.path.map((node, i) => (
                                 <span key={i} className="flex items-center gap-0.5">
